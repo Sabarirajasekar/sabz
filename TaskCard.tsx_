@@ -1,0 +1,28 @@
+export interface Task {
+  id: string;
+  title: string;
+  assignee: string;
+  deadline: string;
+  done: boolean;
+  overdue: boolean;
+  createdAt: number;
+  createdBy: string;
+}
+
+export interface HistoryDay {
+  date: string;
+  tasks: Task[];
+}
+
+export interface ActivityEntry {
+  id: string;
+  user: string;
+  action: string;
+  detail?: string;
+  timestamp: number;
+}
+
+export interface Member {
+  id: string;
+  name: string;
+}

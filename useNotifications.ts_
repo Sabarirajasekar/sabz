@@ -1,0 +1,226 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { Task, HistoryDay, ActivityEntry } from "@/types";
+
+const TASKS_KEY = "dtb_tasks";
+const HISTORY_KEY = "dtb_history";
+const LOG_KEY = "dtb_activity_log";
+const MEMBERS_KEY = "dtb_members";
+
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function load<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function save<T>(key: string, value: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* quota or private mode — ignore */
+  }
+}
+
+export function useStore() {
+  const [tasks, setTasks] = useState<Record<string, Task[]>>(() =>
+    load(TASKS_KEY, {} as Record<string, Task[]>)
+  );
+  const [history, setHistory] = useState<HistoryDay[]>(() =>
+    load(HISTORY_KEY, [] as HistoryDay[])
+  );
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>(() =>
+    load(LOG_KEY, [] as ActivityEntry[])
+  );
+  const [members, setMembers] = useState<string[]>(() =>
+    load(MEMBERS_KEY, ["Sabari", "Afrin"])
+  );
+
+  useEffect(() => save(TASKS_KEY, tasks), [tasks]);
+  useEffect(() => save(HISTORY_KEY, history), [history]);
+  useEffect(() => save(LOG_KEY, activityLog), [activityLog]);
+  useEffect(() => save(MEMBERS_KEY, members), [members]);
+
+  const lastArchiveRef = useRef<string>(todayKey());
+
+  const archiveOldDays = useCallback(() => {
+    const today = todayKey();
+    const pastDates = Object.keys(tasks).filter((d) => d < today);
+    if (pastDates.length === 0) return;
+
+    setHistory((prev) => {
+      const updated = [...prev];
+      for (const date of pastDates) {
+        const idx = updated.findIndex((h) => h.date === date);
+        const entry = { date, tasks: tasks[date] || [] };
+        if (idx >= 0) updated[idx] = entry;
+        else updated.push(entry);
+      }
+      return updated.sort((a, b) => b.date.localeCompare(a.date));
+    });
+
+    setTasks((prev) => {
+      const next = { ...prev };
+      for (const d of pastDates) delete next[d];
+      return next;
+    });
+  }, [tasks]);
+
+  useEffect(() => {
+    const today = todayKey();
+    if (lastArchiveRef.current !== today) {
+      lastArchiveRef.current = today;
+    }
+    archiveOldDays();
+  }, [archiveOldDays]);
+
+  const today = todayKey();
+  const todayTasks = tasks[today] || [];
+
+  const addTask = useCallback(
+    (title: string, assignee: string, deadline: string, createdBy: string) => {
+      const t = todayKey();
+      const newTask: Task = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        title: title.trim(),
+        assignee,
+        deadline,
+        done: false,
+        overdue: false,
+        createdAt: Date.now(),
+        createdBy,
+      };
+      setTasks((prev) => ({
+        ...prev,
+        [t]: [...(prev[t] || []), newTask],
+      }));
+      setActivityLog((prev) => [
+        ...prev,
+        {
+          id: `log-${Date.now()}`,
+          user: createdBy,
+          action: "added",
+          detail: title.trim(),
+          timestamp: Date.now(),
+        },
+      ]);
+    },
+    []
+  );
+
+  const toggleTask = useCallback(
+    (id: string, user: string) => {
+      const t = todayKey();
+      setTasks((prev) => {
+        const list = prev[t] || [];
+        const task = list.find((x) => x.id === id);
+        if (!task) return prev;
+        const newDone = !task.done;
+        setActivityLog((log) => [
+          ...log,
+          {
+            id: `log-${Date.now()}`,
+            user,
+            action: newDone ? "completed" : "uncompleted",
+            detail: task.title,
+            timestamp: Date.now(),
+          },
+        ]);
+        return {
+          ...prev,
+          [t]: list.map((x) =>
+            x.id === id ? { ...x, done: newDone, overdue: newDone ? false : x.overdue } : x
+          ),
+        };
+      });
+    },
+    []
+  );
+
+  const deleteTask = useCallback(
+    (id: string, user: string) => {
+      const t = todayKey();
+      setTasks((prev) => {
+        const list = prev[t] || [];
+        const task = list.find((x) => x.id === id);
+        if (task) {
+          setActivityLog((log) => [
+            ...log,
+            {
+              id: `log-${Date.now()}`,
+              user,
+              action: "deleted",
+              detail: task.title,
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+        return {
+          ...prev,
+          [t]: list.filter((x) => x.id !== id),
+        };
+      });
+    },
+    []
+  );
+
+  const markOverdue = useCallback((id: string) => {
+    const t = todayKey();
+    setTasks((prev) => {
+      const list = prev[t] || [];
+      const task = list.find((x) => x.id === id);
+      if (!task || task.done || task.overdue) return prev;
+      return {
+        ...prev,
+        [t]: list.map((x) => (x.id === id ? { ...x, overdue: true } : x)),
+      };
+    });
+  }, []);
+
+  const addMemberIfNew = useCallback((name: string) => {
+    setMembers((prev) => {
+      const exists = prev.some(
+        (m) => m.toLowerCase() === name.toLowerCase()
+      );
+      if (exists) return prev;
+      return [...prev, name];
+    });
+  }, []);
+
+  const logActivity = useCallback(
+    (user: string, action: string, detail?: string) => {
+      setActivityLog((prev) => [
+        ...prev,
+        {
+          id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          user,
+          action,
+          detail: detail || "",
+          timestamp: Date.now(),
+        },
+      ]);
+    },
+    []
+  );
+
+  return {
+    members,
+    todayTasks,
+    history,
+    activityLog,
+    addTask,
+    toggleTask,
+    deleteTask,
+    markOverdue,
+    addMemberIfNew,
+    logActivity,
+  };
+}
